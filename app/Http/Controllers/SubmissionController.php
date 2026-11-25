@@ -61,7 +61,27 @@ class SubmissionController extends Controller
         // 2. Validasi input 'nilai' (required|integer|min:0|max:100) dan 'catatan_dosen' (nullable|string|max:1000).
         // 3. Simpan perubahan menggunakan $submission->update(...) dan redirect back() dengan pesan sukses.
 
-        abort(501, 'Fitur belum diimplementasikan');
+        if ($submission->assignment->course->dosen_id !== Auth::id()) {
+            abort(403, 'Akses ditolak. Anda bukan dosen pengampu mata kuliah ini.');
+        }
+
+        $validated = $request->validate([
+            'nilai' => ['required', 'integer', 'min:0', 'max:100'],
+            'catatan_dosen' => ['nullable', 'string', 'max:1000'],
+        ], [
+            'nilai.required' => 'Nilai wajib diisi.',
+            'nilai.integer' => 'Nilai harus berupa angka bulat.',
+            'nilai.min' => 'Nilai minimal adalah 0.',
+            'nilai.max' => 'Nilai maksimal adalah 100.',
+            'catatan_dosen.max' => 'Catatan dosen maksimal 1000 karakter.',
+        ]);
+
+        $submission->update([
+            'nilai' => $validated['nilai'],
+            'catatan_dosen' => $validated['catatan_dosen'] ?? null,
+        ]);
+
+        return back()->with('success', 'Nilai dan catatan dosen berhasil disimpan.');
     }
 
     public function exportCsv(Assignment $assignment): StreamedResponse
@@ -71,6 +91,46 @@ class SubmissionController extends Controller
         // 2. Muat relasi course.approvedStudents dan submissions dari $assignment.
         // 3. Kembalikan response()->streamDownload(...) yang menulis header & baris CSV menggunakan fopen('php://output', 'w') dan fputcsv().
 
-        abort(501, 'Fitur belum diimplementasikan');
+        if ($assignment->course->dosen_id !== Auth::id()) {
+            abort(403, 'Akses ditolak. Anda bukan dosen pengampu mata kuliah ini.');
+        }
+
+        $assignment->load(['course.approvedStudents', 'submissions.user']);
+        $submissionsByUser = $assignment->submissions->keyBy('user_id');
+        $filename = 'nilai-' . \Illuminate\Support\Str::slug($assignment->judul ?? ('tugas-' . $assignment->id)) . '.csv';
+
+        return response()->streamDownload(function () use ($assignment, $submissionsByUser) {
+            $handle = fopen('php://output', 'w');
+
+            fputcsv($handle, [
+                'Nama Mahasiswa',
+                'Nomor Induk',
+                'Email',
+                'Status Pengumpulan',
+                'Nilai',
+                'Status Nilai',
+                'Catatan Dosen',
+                'Waktu Submit',
+            ]);
+
+            foreach ($assignment->course->approvedStudents as $student) {
+                $submission = $submissionsByUser->get($student->id);
+
+                fputcsv($handle, [
+                    $student->name,
+                    $student->nomor_induk ?? '-',
+                    $student->email,
+                    $submission ? 'Sudah Mengumpulkan' : 'Belum Mengumpulkan',
+                    $submission && !is_null($submission->nilai) ? $submission->nilai : '-',
+                    $submission ? $submission->status_nilai : 'Belum Dinilai',
+                    $submission && !is_null($submission->catatan_dosen) ? $submission->catatan_dosen : '-',
+                    $submission && $submission->submitted_at ? $submission->submitted_at->format('Y-m-d H:i:s') : '-',
+                ]);
+            }
+
+            fclose($handle);
+        }, $filename, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
     }
 }
